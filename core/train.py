@@ -8,19 +8,25 @@ import torch.optim as optim
 
 
 def CORAL(source, target):
+    ns = source.data.size(0)
+    nt = target.data.size(0)
     d = source.data.size(1)
 
     # source covariance
-    xms = source - torch.mean(source, 0, keepdim=True)
-    xcs = xms.t() @ xms
+    xms = torch.sum(source, 0, keepdim=True)
+    xcs = (source.t() @ source - (xms.t() @ xms) / ns) / ns
+    # xms = source - torch.mean(source, 0, keepdim=True)
+    # xcs = xms.t() @ xms
 
     # target covariance
-    xmt = target - torch.mean(target, 0, keepdim=True)
-    xct = xmt.t() @ xmt
+    xmt = torch.sum(target, 0, keepdim=True)
+    xct = (target.t() @ target - (xmt.t() @ xmt) / nt) / nt
+    # xmt = target - torch.mean(target, 0, keepdim=True)
+    # xct = xmt.t() @ xmt
 
     # frobenius norm between source and target
     loss = torch.sum(torch.mul((xcs - xct), (xcs - xct)))
-    loss = loss/(4*d*d)
+    loss = loss / (4*d*d)
 
     return loss
 
@@ -57,8 +63,8 @@ def train_src(args, encoder, classifier, src_data_loader, tgt_data_loader, data_
             tgt_mask = (tgt_reviews != 0).long()
             src_feat = encoder(src_reviews, src_mask)
             tgt_feat = encoder(tgt_reviews, tgt_mask)
-            src_preds = classifier(src_feat)
-            class_loss = criterion(src_preds, src_labels)
+            preds = classifier(src_feat)
+            class_loss = criterion(preds, src_labels)
             coral_loss = CORAL(src_feat, tgt_feat)
             loss = class_loss + coral_loss
 
