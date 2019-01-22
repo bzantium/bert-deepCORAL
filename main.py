@@ -1,8 +1,8 @@
 """Main script for ADDA."""
 
 from params import param
-from core import eval_src, eval_tgt, train_src
-from models import BERTEncoder, BERTClassifier, Discriminator
+from core import train_src, eval_tgt
+from models import BERTEncoder, BERTClassifier
 from utils import read_data, get_data_loader, init_model, init_random_seed
 from pytorch_pretrained_bert import BertTokenizer
 import argparse
@@ -25,7 +25,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=32,
                         help="Specify batch size")
 
-    parser.add_argument('--num_epochs', type=int, default=10,
+    parser.add_argument('--num_epochs', type=int, default=5,
                         help="Specify the number of epochs for training")
 
     parser.add_argument('--log_step', type=int, default=1,
@@ -101,20 +101,15 @@ if __name__ == '__main__':
     # load models
     encoder = BERTEncoder()
     classifier = BERTClassifier()
-    critic = Discriminator()
 
     if torch.cuda.device_count() > 1:
         encoder = torch.nn.DataParallel(encoder)
         classifier = torch.nn.DataParallel(classifier)
-        critic = torch.nn.DataParallel(critic)
 
     encoder = init_model(encoder,
                              restore=param.encoder_restore)
     classifier = init_model(classifier,
                                 restore=param.classifier_restore)
-    critic = init_model(critic,
-                        restore=param.d_model_restore)
-
     # freeze source encoder params
     if torch.cuda.device_count() > 1:
         for params in encoder.module.encoder.embeddings.parameters():
