@@ -8,6 +8,7 @@ from utils import XML2Array, blog2Array, review2seq, \
 from sklearn.model_selection import train_test_split
 import os
 import argparse
+from pytorch_pretrained_bert import BertTokenizer
 import torch
 
 if __name__ == '__main__':
@@ -57,7 +58,7 @@ if __name__ == '__main__':
 
     # preprocess data
     print("=== Processing datasets ===")
-reviews, labels = XML2Array(os.path.join('data', args.src, 'negative.parsed'),
+	reviews, labels = XML2Array(os.path.join('data', args.src, 'negative.parsed'),
                                 os.path.join('data', args.src, 'positive.parsed'))
 
     src_X_train, src_X_test, src_Y_train, src_Y_test = train_test_split(reviews, labels,
@@ -80,6 +81,7 @@ reviews, labels = XML2Array(os.path.join('data', args.src, 'negative.parsed'),
     src_data_loader = get_data_loader(src_X_train, src_Y_train, args.batch_size, args.seqlen)
     src_data_loader_eval = get_data_loader(src_X_test, src_Y_test, args.batch_size, args.seqlen)
     tgt_data_loader = get_data_loader(tgt_X, tgt_Y, args.batch_size, args.seqlen)
+
 
     # load models
     encoder = BERTEncoder()
