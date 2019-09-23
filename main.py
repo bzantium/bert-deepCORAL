@@ -1,114 +1,169 @@
 """Main script for ADDA."""
 
-from params import param
-from core import train_src, eval_tgt
-from models import BERTEncoder, BERTClassifier
-from utils import XML2Array, blog2Array, review2seq, \
-    get_data_loader, init_model
+import param
+from train import train, evaluate
+from model import BertEncoder, DistilBertEncoder, BertClassifier, \
+    RobertaEncoder, RobertaClassifier, DomainClassifier, RobertaDomainClassifier
+from utils import XML2Array, CSV2Array, convert_examples_to_features, \
+    roberta_convert_examples_to_features, get_data_loader, init_model
 from sklearn.model_selection import train_test_split
-import os
-import argparse
-from pytorch_pretrained_bert import BertTokenizer
+from pytorch_transformers import BertTokenizer, RobertaTokenizer
 import torch
+import os
+import random
+import argparse
 
-if __name__ == '__main__':
+
+def parse_arguments():
     # argument parsing
     parser = argparse.ArgumentParser(description="Specify Params for Experimental Setting")
 
-    parser.add_argument('--src', type=str, default="books", choices=["books", "dvd", "electronics", "kitchen"],
+    parser.add_argument('--src', type=str, default="books",
+                        choices=["books", "dvd", "electronics", "kitchen", "blog", "airline"],
                         help="Specify src dataset")
 
-    parser.add_argument('--tgt', type=str, default="dvd", choices=["books", "dvd", "electronics", "kitchen"],
+    parser.add_argument('--tgt', type=str, default="dvd",
+                        choices=["books", "dvd", "electronics", "kitchen", "blog", "airline"],
                         help="Specify tgt dataset")
 
-    parser.add_argument('--random_state', type=int, default=42,
+    parser.add_argument('--train', default=False, action='store_true',
+                        help='Force to train source encoder/classifier')
+
+    parser.add_argument('--seed', type=int, default=42,
                         help="Specify random state")
 
-    parser.add_argument('--seqlen', type=int, default=50,
+    parser.add_argument('--train_seed', type=int, default=42,
+                        help="Specify random state")
+
+    parser.add_argument('--load', default=False, action='store_true',
+                        help="Load saved model")
+
+    parser.add_argument('--model', type=str, default="bert",
+                        choices=["bert", "distilbert", "roberta"],
+                        help="Specify model type")
+
+    parser.add_argument('--max_seq_length', type=int, default=128,
                         help="Specify maximum sequence length")
 
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=64,
                         help="Specify batch size")
 
-    parser.add_argument('--num_epochs', type=int, default=5,
-                        help="Specify the number of epochs for training")
+    parser.add_argument('--alpha', type=float, default=1.0,
+                        help="Specify domain weight")
+
+    parser.add_argument('--num_epochs', type=int, default=3,
+                        help="Specify the number of epochs for adaptation")
 
     parser.add_argument('--log_step', type=int, default=1,
-                        help="Specify log step size for training")
+                        help="Specify log step size for adaptation")
 
-    parser.add_argument('--eval_step', type=int, default=1,
-                        help="Specify eval step size for training")
+    return parser.parse_args()
 
-    parser.add_argument('--save_step', type=int, default=100,
-                        help="Specify save step size for training")
 
-    args = parser.parse_args()
+def set_seed(seed):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.device_count() > 0:
+        torch.cuda.manual_seed_all(seed)
 
+
+def main():
+    args = parse_arguments()
     # argument setting
     print("=== Argument Setting ===")
     print("src: " + args.src)
     print("tgt: " + args.tgt)
-    print("random_state: " + str(args.random_state))
-    print("seqlen: " + str(args.seqlen))
+    print("alpha: " + str(args.alpha))
+    print("seed: " + str(args.seed))
+    print("train_seed: " + str(args.train_seed))
+    print("model_type: " + str(args.model))
+    print("max_seq_length: " + str(args.max_seq_length))
     print("batch_size: " + str(args.batch_size))
     print("num_epochs: " + str(args.num_epochs))
-    print("log_step: " + str(args.log_step))
-    print("eval_step: " + str(args.eval_step))
-    print("save_step: " + str(args.save_step))
+    set_seed(args.train_seed)
+
+    if args.model == 'roberta':
+        tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
+    else:
+        tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
     # preprocess data
     print("=== Processing datasets ===")
-	reviews, labels = XML2Array(os.path.join('data', args.src, 'negative.parsed'),
-                                os.path.join('data', args.src, 'positive.parsed'))
+    if args.src == 'blog':
+        src_x, src_y = CSV2Array(os.path.join('data', args.src, 'blog.csv'))
 
-    src_X_train, src_X_test, src_Y_train, src_Y_test = train_test_split(reviews, labels,
-                                                                        test_size=0.2,
-                                                                        random_state=args.random_state)
-    del reviews, labels
+    elif args.src == 'airline':
+        src_x, src_y = CSV2Array(os.path.join('data', args.src, 'airline.csv'))
+
+    else:
+        src_x, src_y = XML2Array(os.path.join('data', args.src, 'negative.review'),
+                               os.path.join('data', args.src, 'positive.review'))
+
+    src_x, src_test_x, src_y, src_test_y = train_test_split(src_x, src_y,
+                                                            test_size=0.2,
+                                                            stratify=src_y,
+                                                            random_state=args.seed)
 
     if args.tgt == 'blog':
-        tgt_X, tgt_Y = blog2Array(os.path.join('data', args.tgt, 'blog.parsed'))
+        tgt_x, tgt_y = CSV2Array(os.path.join('data', args.tgt, 'blog.csv'))
 
+    elif args.tgt == 'airline':
+        tgt_x, tgt_y = CSV2Array(os.path.join('data', args.tgt, 'airline.csv'))
     else:
-        tgt_X, tgt_Y = XML2Array(os.path.join('data', args.tgt, 'negative.parsed'),
-                                 os.path.join('data', args.tgt, 'positive.parsed'))
+        tgt_x, tgt_y = XML2Array(os.path.join('data', args.tgt, 'negative.review'),
+                                 os.path.join('data', args.tgt, 'positive.review'))
 
-    src_X_train = review2seq(src_X_train)
-    src_X_test = review2seq(src_X_test)
-    tgt_X = review2seq(tgt_X)
+    tgt_train_x, _, tgt_train_y, _ = train_test_split(tgt_x, tgt_y,
+                                                      test_size=0.2,
+                                                      stratify=tgt_y,
+                                                      random_state=args.seed)
+
+    if args.model == 'roberta':
+        src_features = roberta_convert_examples_to_features(src_x, src_y, args.max_seq_length, tokenizer)
+        src_test_features = roberta_convert_examples_to_features(src_test_x, src_test_y, args.max_seq_length, tokenizer)
+        tgt_features = roberta_convert_examples_to_features(tgt_train_x, tgt_train_y, args.max_seq_length, tokenizer)
+        tgt_all_features = roberta_convert_examples_to_features(tgt_x, tgt_y, args.max_seq_length, tokenizer)
+    else:
+        src_features = convert_examples_to_features(src_x, src_y, args.max_seq_length, tokenizer)
+        src_test_features = convert_examples_to_features(src_test_x, src_test_y, args.max_seq_length, tokenizer)
+        tgt_features = convert_examples_to_features(tgt_train_x, tgt_train_y, args.max_seq_length, tokenizer)
+        tgt_all_features = convert_examples_to_features(tgt_x, tgt_y, args.max_seq_length, tokenizer)
 
     # load dataset
-    src_data_loader = get_data_loader(src_X_train, src_Y_train, args.batch_size, args.seqlen)
-    src_data_loader_eval = get_data_loader(src_X_test, src_Y_test, args.batch_size, args.seqlen)
-    tgt_data_loader = get_data_loader(tgt_X, tgt_Y, args.batch_size, args.seqlen)
 
+    src_data_loader = get_data_loader(src_features, args.batch_size)
+    src_data_loader_eval = get_data_loader(src_test_features, args.batch_size)
+    tgt_data_loader = get_data_loader(tgt_features, args.batch_size)
+    tgt_data_loader_all = get_data_loader(tgt_all_features, args.batch_size)
 
     # load models
-    encoder = BERTEncoder()
-    classifier = BERTClassifier()
-
-    if torch.cuda.device_count() > 1:
-        encoder = torch.nn.DataParallel(encoder)
-        classifier = torch.nn.DataParallel(classifier)
-
-    encoder = init_model(encoder,
-                             restore=param.encoder_restore)
-    classifier = init_model(classifier,
-                                restore=param.classifier_restore)
-    # freeze source encoder params
-    if torch.cuda.device_count() > 1:
-        for params in encoder.module.encoder.embeddings.parameters():
-            params.requires_grad = False
+    if args.model == 'bert':
+        encoder = BertEncoder()
+        classifier = BertClassifier()
+    elif args.model == 'distilbert':
+        encoder = DistilBertEncoder()
+        classifier = BertClassifier()
     else:
-        for params in encoder.encoder.embeddings.parameters():
-            params.requires_grad = False
+        encoder = RobertaEncoder()
+        classifier = RobertaClassifier()
 
-    # train source model
-    print("=== Training classifier for source domain ===")
-    encoder, classifier = train_src(
-        args, encoder, classifier, src_data_loader, tgt_data_loader, src_data_loader_eval)
+    if args.load:
+        encoder = init_model(encoder, restore=param.encoder_path)
+        classifier = init_model(classifier, restore=param.classifier_path)
+    else:
+        encoder = init_model(encoder)
+        classifier = init_model(classifier)
 
-    # eval target encoder on lambda0.1 set of target dataset
+    print("=== Start Training ===")
+    if args.train:
+        encoder, classifier = train(args, encoder, classifier,
+                                    src_data_loader, src_data_loader_eval,
+                                    tgt_data_loader, tgt_data_loader_all)
+
     print("=== Evaluating classifier for encoded target domain ===")
-    print(">>> deepCORAL evaluation <<<")
-    eval_tgt(encoder, classifier, tgt_data_loader)
+    print(">>> after training <<<")
+    evaluate(encoder, classifier, tgt_data_loader_all)
+
+
+if __name__ == '__main__':
+    main()

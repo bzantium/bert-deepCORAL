@@ -6,12 +6,18 @@ import torch
 from lxml import etree
 import xml.etree.ElementTree as ET
 import torch.backends.cudnn as cudnn
-from torch.utils.data import DataLoader, Dataset
-from pytorch_pretrained_bert import BertTokenizer
-from params import param
+from torch.utils.data import DataLoader, TensorDataset, RandomSampler
+import param
 import re
 
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
+class InputFeatures(object):
+    """A single set of features of data."""
+
+    def __init__(self, input_ids, input_mask, label_id):
+        self.input_ids = input_ids
+        self.input_mask = input_mask
+        self.label_id = label_id
 
 
 def XML2Array(neg_path, pos_path):
@@ -24,6 +30,7 @@ def XML2Array(neg_path, pos_path):
 
     neg_tree = ET.parse(neg_path, parser=parser)
     neg_root = neg_tree.getroot()
+
     for rev in neg_root.iter('review_text'):
         text = regex.sub(" ", rev.text)
         reviews.append(text)
@@ -39,22 +46,16 @@ def XML2Array(neg_path, pos_path):
         posCount += 1
     labels.extend(np.ones(posCount, dtype=int))
 
+    reviews = np.array(reviews)
+    labels = np.array(labels)
+
     return reviews, labels
 
 
-def TSV2Array(path):
-    data = pd.read_csv(path, delimiter='\t')
+def CSV2Array(path):
+    data = pd.read_csv(path, encoding='latin')
     reviews, labels = data.reviews.values.tolist(), data.labels.values.tolist()
     return reviews, labels
-
-
-def review2seq(reviews):
-    sequences = []
-    for i in range(len(reviews)):
-        tokens = tokenizer.tokenize(reviews[i])
-        sequence = tokenizer.convert_tokens_to_ids(tokens)
-        sequences.append(sequence)
-    return sequences
 
 
 def make_cuda(tensor):
@@ -78,7 +79,6 @@ def init_random_seed(manual_seed):
 
 
 def init_model(net, restore=None):
-
     # restore model weights
     if restore is not None and os.path.exists(restore):
         net.load_state_dict(torch.load(restore))
@@ -91,53 +91,74 @@ def init_model(net, restore=None):
     return net
 
 
-def save_model(net, filename):
+def save_model(net, path):
     """Save trained model."""
-    if not os.path.exists(param.model_root):
-        os.makedirs(param.model_root)
-    torch.save(net.state_dict(),
-               os.path.join(param.model_root, filename))
-    print("save pretrained model to: {}".format(os.path.join(param.model_root, filename)))
+    folder_name = os.path.dirname(path)
+    if not os.path.exists(folder_name):
+        os.makedirs(folder_name)
+    torch.save(net.state_dict(), path)
+    print("save pretrained model to: {}".format(path))
 
 
-def get_data_loader(sequences, labels, batch_size, maxlen=None):
-    # dataset and data loader
-    text_dataset = TextDataset(sequences, labels, maxlen)
+def convert_examples_to_features(reviews, labels, max_seq_length, tokenizer,
+                                 cls_token='[CLS]', sep_token='[SEP]',
+                                 pad_token=0):
+    features = []
+    for ex_index, (review, label) in enumerate(zip(reviews, labels)):
+        if (ex_index + 1) % 200 == 0:
+            print("writing example %d of %d" % (ex_index + 1, len(reviews)))
+        tokens = tokenizer.tokenize(review)
+        if len(tokens) > max_seq_length - 2:
+            tokens = tokens[:(max_seq_length - 2)]
+        tokens = [cls_token] + tokens + [sep_token]
+        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        input_mask = [1] * len(input_ids)
+        padding_length = max_seq_length - len(input_ids)
+        input_ids = input_ids + ([pad_token] * padding_length)
+        input_mask = input_mask + ([0] * padding_length)
 
-    text_data_loader = DataLoader(
-        dataset=text_dataset,
-        batch_size=batch_size,
-        shuffle=True)
+        assert len(input_ids) == max_seq_length
+        assert len(input_mask) == max_seq_length
 
-    return text_data_loader
+        features.append(
+            InputFeatures(input_ids=input_ids,
+                          input_mask=input_mask,
+                          label_id=label))
+    return features
 
 
-class TextDataset(Dataset):
-    def __init__(self, sequences, labels, maxlen):
+def roberta_convert_examples_to_features(reviews, labels, max_seq_length, tokenizer,
+                                         cls_token='<s>', sep_token='</s>',
+                                         pad_token=1):
+    features = []
+    for ex_index, (review, label) in enumerate(zip(reviews, labels)):
+        if (ex_index + 1) % 200 == 0:
+            print("writing example %d of %d" % (ex_index + 1, len(reviews)))
+        tokens = tokenizer.tokenize(review)
+        if len(tokens) > max_seq_length - 2:
+            tokens = tokens[:(max_seq_length - 2)]
+        tokens = [cls_token] + tokens + [sep_token]
+        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        input_mask = [1] * len(input_ids)
+        padding_length = max_seq_length - len(input_ids)
+        input_ids = input_ids + ([pad_token] * padding_length)
+        input_mask = input_mask + ([0] * padding_length)
 
-        seqlen = max([len(sequence) for sequence in sequences])
+        assert len(input_ids) == max_seq_length
+        assert len(input_mask) == max_seq_length
 
-        if maxlen is None or maxlen > seqlen:
-            maxlen = seqlen
+        features.append(
+            InputFeatures(input_ids=input_ids,
+                          input_mask=input_mask,
+                          label_id=label))
+    return features
 
-        seq_data = list()
-        for sequence in sequences:
-            sequence.insert(0, 101) # insert [CLS] token
-            sequence.append(102) # insert [SEP] token
-            seqlen = len(sequence)
-            if seqlen < maxlen:
-                sequence.extend([0] * (maxlen-seqlen))
-            else:
-                sequence = sequence[:maxlen]
-            seq_data.append(sequence)
 
-        self.data = torch.LongTensor(seq_data).cuda()
-        self.labels = torch.LongTensor(labels).cuda()
-        self.dataset_size = len(self.data)
-
-    def __getitem__(self, index):
-        review, label = self.data[index], self.labels[index]
-        return review, label
-
-    def __len__(self):
-        return self.dataset_size
+def get_data_loader(features, batch_size):
+    all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
+    all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
+    all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
+    dataset = TensorDataset(all_input_ids, all_input_mask, all_label_ids)
+    sampler = RandomSampler(dataset)
+    dataloader = DataLoader(dataset, sampler=sampler, batch_size=batch_size)
+    return dataloader
