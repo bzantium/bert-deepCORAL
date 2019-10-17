@@ -9,21 +9,23 @@ from utils import save_model
 
 
 def CORAL(source, target):
-    ns = source.data.size(0)
-    nt = target.data.size(0)
-    d = source.data.size(1)
-
+    d = source.size(1)
+    ns, nt = source.size(0), target.size(0)
     # source covariance
-    xms = torch.sum(source, dim=0, keepdim=True)
-    xcs = (source.t() @ source - (xms.t() @ xms) / ns) / ns
-
+    tmp_s = torch.sum(source, dim=0, keepdim=True)
+    cs = (source.t() @ source - (tmp_s.t() @ tmp_s) / ns) / (ns - 1)
     # target covariance
-    xmt = torch.sum(target, dim=0, keepdim=True)
-    xct = (target.t() @ target - (xmt.t() @ xmt) / nt) / nt
+    tmp_t = torch.sum(target, dim=0, keepdim=True)
+    ct = (target.t() @ target - (tmp_t.t() @ tmp_t) / nt) / (nt - 1)
+    # frobenius norm
+    loss = (cs - ct).pow(2).sum().sqrt()
+    loss = loss / (4 * d * d)
+    return loss
 
-    # frobenius norm between source and target
-    loss = torch.sum(torch.mul((xcs - xct), (xcs - xct)))
-    loss = loss / (4*d*d)
+
+def MMD(source, target):
+    delta = source - target
+    loss = torch.mean(torch.mm(delta, torch.transpose(delta, 0, 1)))
     return loss
 
 
@@ -67,8 +69,11 @@ def train(args, encoder, classifier,
             # prepare real and fake label
             optimizer.zero_grad()
             cls_loss = CELoss(src_preds, src_labels)
-            coral_loss = CORAL(src_feat, tgt_feat)
-            loss = cls_loss + args.alpha * coral_loss
+            if args.method == 'coral':
+                adapt_loss = CORAL(src_feat, tgt_feat)
+            else: # args.method == 'mmd'
+                adapt_loss = MMD(src_feat, tgt_feat)
+            loss = cls_loss + args.alpha * adapt_loss
 
             # optimize source classifier
             loss.backward()
@@ -82,7 +87,7 @@ def train(args, encoder, classifier,
                          step + 1,
                          len(src_data_loader),
                          cls_loss.item(),
-                         coral_loss.item()))
+                         adapt_loss.item()))
 
         evaluate(encoder, classifier, src_data_loader)
         evaluate(encoder, classifier, src_data_loader_eval)

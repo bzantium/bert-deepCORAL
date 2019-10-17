@@ -3,7 +3,7 @@
 import param
 from train import train, evaluate
 from model import BertEncoder, DistilBertEncoder, BertClassifier, \
-    RobertaEncoder, RobertaClassifier, DomainClassifier, RobertaDomainClassifier
+    RobertaEncoder, RobertaClassifier
 from utils import XML2Array, CSV2Array, convert_examples_to_features, \
     roberta_convert_examples_to_features, get_data_loader, init_model
 from sklearn.model_selection import train_test_split
@@ -47,6 +47,10 @@ def parse_arguments():
 
     parser.add_argument('--batch_size', type=int, default=64,
                         help="Specify batch size")
+
+    parser.add_argument('--method', type=str, default='coral',
+                        choices=['coral', 'mmd'],
+                        help="Specify domain adaptation method")
 
     parser.add_argument('--alpha', type=float, default=1.0,
                         help="Specify domain weight")
